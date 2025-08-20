@@ -13,6 +13,7 @@ import {
   LogOut,
   Search,
   MoreVertical,
+  Loader,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -21,16 +22,19 @@ const ChatbotHome = () => {
   const [message, setMessage] = useState("");
   const [currentChatId, setCurrentChatId] = useState(1);
   const [searchQuery, setSearchQuery] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
 
   const navigate = useNavigate();
+
   function handleLogout() {
     navigate("/");
   }
+
   function profileHandler() {
     navigate("/profile");
   }
-  // Sample chat data - in real app, this would come from API/database
+
   const [chats, setChats] = useState([
     {
       id: 1,
@@ -43,18 +47,6 @@ const ChatbotHome = () => {
           text: "Hello! How can I help you today?",
           isBot: true,
           timestamp: new Date(Date.now() - 3600000),
-        },
-        {
-          id: 2,
-          text: "I need help with understanding AI concepts",
-          isBot: false,
-          timestamp: new Date(Date.now() - 3500000),
-        },
-        {
-          id: 3,
-          text: "I'd be happy to help explain AI concepts! What specific area would you like to explore?",
-          isBot: true,
-          timestamp: new Date(Date.now() - 3400000),
         },
       ],
     },
@@ -113,35 +105,119 @@ const ChatbotHome = () => {
     scrollToBottom();
   }, [currentChat?.messages]);
 
-  const sendMessage = () => {
-    if (!message.trim()) return;
+  // API call function
+  const sendToAPI = async (userMessage) => {
+    try {
+      console.log("Sending message:", userMessage);
 
+      const res = await fetch("/webhook-test/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          msg: userMessage,
+        }),
+      });
+
+      console.log("Response status:", res.status);
+      console.log("Response ok:", res.ok);
+
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+      }
+
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        const data = await res.json();
+        console.log("Response data:", data);
+
+        // Extract the actual message from the response
+        // Adjust this based on your API response structure
+        return (
+          data.message || data.response || data.text || JSON.stringify(data)
+        );
+      } else {
+        const text = await res.text();
+        console.log("Response text:", text);
+        return text;
+      }
+    } catch (err) {
+      console.error("Error sending message:", err);
+      console.error("Error details:", err.message);
+
+      // Return error message to display to user
+      if (err.message.includes("Failed to fetch")) {
+        return "Sorry, I'm having trouble connecting to the server. Please check your internet connection and try again.";
+      }
+      return "Sorry, I encountered an error. Please try again.";
+    }
+  };
+
+  // Main send message function
+  const sendMessage = async () => {
+    if (!message.trim() || isLoading) return;
+
+    const userMessage = message.trim();
+    setMessage(""); // Clear input immediately
+    setIsLoading(true);
+
+    // Create user message
     const newUserMessage = {
       id: Date.now(),
-      text: message,
+      text: userMessage,
       isBot: false,
       timestamp: new Date(),
     };
 
-    // Add user message
+    // Add user message to chat
     setChats((prevChats) =>
       prevChats.map((chat) =>
         chat.id === currentChatId
           ? {
               ...chat,
               messages: [...chat.messages, newUserMessage],
-              lastMessage: message,
+              lastMessage: userMessage,
               timestamp: new Date().toISOString(),
             }
           : chat
       )
     );
 
-    // Simulate bot response
-    setTimeout(() => {
+    try {
+      // Get response from API
+      const botResponseText = await sendToAPI(userMessage);
+
+      // Create bot message
       const botResponse = {
         id: Date.now() + 1,
-        text: generateBotResponse(message),
+        text: botResponseText,
+        isBot: true,
+        timestamp: new Date(),
+      };
+
+      // Add bot response to chat
+      setChats((prevChats) =>
+        prevChats.map((chat) =>
+          chat.id === currentChatId
+            ? {
+                ...chat,
+                messages: [...chat.messages, botResponse],
+                lastMessage:
+                  botResponseText.length > 50
+                    ? botResponseText.substring(0, 50) + "..."
+                    : botResponseText,
+              }
+            : chat
+        )
+      );
+    } catch (error) {
+      console.error("Error in sendMessage:", error);
+
+      // Add error message as bot response
+      const errorResponse = {
+        id: Date.now() + 1,
+        text: "Sorry, I encountered an error processing your message. Please try again.",
         isBot: true,
         timestamp: new Date(),
       };
@@ -151,26 +227,15 @@ const ChatbotHome = () => {
           chat.id === currentChatId
             ? {
                 ...chat,
-                messages: [...chat.messages, botResponse],
-                lastMessage: botResponse.text,
+                messages: [...chat.messages, errorResponse],
+                lastMessage: errorResponse.text,
               }
             : chat
         )
       );
-    }, 1000);
-
-    setMessage("");
-  };
-
-  const generateBotResponse = (userMessage) => {
-    const responses = [
-      "That's a great question! Let me help you with that.",
-      "I understand what you're asking. Here's what I think...",
-      "Thanks for sharing that. Based on what you've said...",
-      "That's an interesting point. Let me provide some insights.",
-      "I'd be happy to help you explore this further.",
-    ];
-    return responses[Math.floor(Math.random() * responses.length)];
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const createNewChat = () => {
@@ -179,7 +244,14 @@ const ChatbotHome = () => {
       title: "New Conversation",
       lastMessage: "Start a new conversation",
       timestamp: new Date().toISOString(),
-      messages: [],
+      messages: [
+        {
+          id: 1,
+          text: "Hello! How can I help you today?",
+          isBot: true,
+          timestamp: new Date(),
+        },
+      ],
     };
     setChats([newChat, ...chats]);
     setCurrentChatId(newChat.id);
@@ -200,6 +272,13 @@ const ChatbotHome = () => {
       minute: "2-digit",
       hour12: true,
     });
+  };
+
+  const handleKeyPress = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
   };
 
   return (
@@ -336,7 +415,9 @@ const ChatbotHome = () => {
                 <h1 className="text-xl lg:text-2xl font-bold">
                   {currentChat?.title || "Select a chat"}
                 </h1>
-                <p className="text-gray-400 text-sm">AI Assistant</p>
+                <p className="text-gray-400 text-sm">
+                  {isLoading ? "AI is typing..." : "AI Assistant"}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -388,7 +469,9 @@ const ChatbotHome = () => {
                       : "bg-blue-600/20 border border-blue-500/30"
                   }`}
                 >
-                  <p className="text-sm lg:text-base">{msg.text}</p>
+                  <p className="text-sm lg:text-base whitespace-pre-wrap">
+                    {msg.text}
+                  </p>
                 </div>
                 <p className="text-xs text-gray-500 mt-1">
                   {formatTime(msg.timestamp)}
@@ -396,6 +479,24 @@ const ChatbotHome = () => {
               </div>
             </div>
           ))}
+
+          {/* Loading indicator */}
+          {isLoading && (
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-gradient-to-br from-blue-500 to-purple-600">
+                <Bot size={16} />
+              </div>
+              <div className="max-w-xs lg:max-w-md xl:max-w-lg">
+                <div className="p-3 lg:p-4 rounded-2xl bg-gray-800/50 border border-gray-700">
+                  <div className="flex items-center gap-2">
+                    <Loader className="animate-spin" size={16} />
+                    <p className="text-sm lg:text-base">Thinking...</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div ref={messagesEndRef} />
         </div>
 
@@ -408,16 +509,23 @@ const ChatbotHome = () => {
                   type="text"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  onKeyPress={(e) => e.key === "Enter" && sendMessage()}
-                  placeholder="Type your message..."
-                  className="w-full px-4 py-3 lg:py-4 pr-12 bg-gray-800/50 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  onKeyPress={handleKeyPress}
+                  placeholder={
+                    isLoading ? "Please wait..." : "Type your message..."
+                  }
+                  disabled={isLoading}
+                  className="w-full px-4 py-3 lg:py-4 pr-12 bg-gray-800/50 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 <button
                   onClick={sendMessage}
-                  disabled={!message.trim()}
+                  disabled={!message.trim() || isLoading}
                   className="absolute right-3 top-1/2 transform -translate-y-1/2 p-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg transition-colors"
                 >
-                  <Send size={16} />
+                  {isLoading ? (
+                    <Loader className="animate-spin" size={16} />
+                  ) : (
+                    <Send size={16} />
+                  )}
                 </button>
               </div>
             </div>

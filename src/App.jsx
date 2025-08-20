@@ -7,11 +7,12 @@ import UserProfile from "./components/UserProfile";
 function App() {
   return (
     <>
-      <Routes>
+      <ChatbotHome />
+      {/* <Routes>
         <Route path="/" element={<ChatbotLogin />} />
         <Route path="/home" element={<ChatbotHome />} />
         <Route path="/profile" element={<UserProfile />} />
-      </Routes>
+      </Routes> */}
     </>
   );
 }
