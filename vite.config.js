@@ -1,11 +1,12 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
 export default defineConfig({
-  plugins: [react(),  tailwindcss()],
+  plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      '/webhook-test': {
+      '/webhook': {  // Changed from '/webhook-test' to '/webhook'
         target: 'https://nirmal4dev.app.n8n.cloud',
         changeOrigin: true,
         secure: true,

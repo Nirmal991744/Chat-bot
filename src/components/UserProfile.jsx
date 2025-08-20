@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   User,
   Mail,
@@ -18,26 +18,39 @@ import {
   Trash2,
   Download,
   Upload,
+  Loader,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { auth } from "../firebase"; // Adjust path as needed
+import {
+  signOut,
+  onAuthStateChanged,
+  updateProfile,
+  updateEmail,
+} from "firebase/auth";
+import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
+import { getFirestore } from "firebase/firestore";
+
+// Initialize Firestore
+const db = getFirestore();
 
 const UserProfile = () => {
   const navigate = useNavigate();
-  function logoutHandler() {
-    navigate("/");
-  }
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [activeTab, setActiveTab] = useState("profile");
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [updateLoading, setUpdateLoading] = useState(false);
 
-  // User data state
+  // User data state - now based on Firebase user
   const [userData, setUserData] = useState({
-    name: "John Doe",
-    email: "john.doe@example.com",
-    phone: "+1 (555) 123-4567",
-    location: "San Francisco, CA",
-    joinDate: "2023-06-15",
-    bio: "AI enthusiast and software developer passionate about creating innovative solutions.",
+    name: "",
+    email: "",
+    phone: "",
+    location: "",
+    joinDate: "",
+    bio: "",
     avatar: null,
     timezone: "Pacific Standard Time",
     language: "English",
@@ -46,9 +59,121 @@ const UserProfile = () => {
 
   const [editData, setEditData] = useState(userData);
 
-  const handleSave = () => {
-    setUserData(editData);
-    setIsEditing(false);
+  // Listen for auth state changes
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setCurrentUser(user);
+        await loadUserData(user);
+      } else {
+        // User is not logged in, redirect to login
+        navigate("/login");
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [navigate]);
+
+  // Load user data from Firestore
+  const loadUserData = async (user) => {
+    try {
+      const userDocRef = doc(db, "users", user.uid);
+      const userDoc = await getDoc(userDocRef);
+
+      const baseUserData = {
+        name: user.displayName || "User",
+        email: user.email || "",
+        phone: user.phoneNumber || "",
+        location: "",
+        joinDate: user.metadata.creationTime,
+        bio: "",
+        avatar: user.photoURL,
+        timezone: "Pacific Standard Time",
+        language: "English",
+        theme: "dark",
+      };
+
+      if (userDoc.exists()) {
+        // Merge Firebase Auth data with Firestore data
+        const firestoreData = userDoc.data();
+        const mergedData = { ...baseUserData, ...firestoreData };
+        setUserData(mergedData);
+        setEditData(mergedData);
+      } else {
+        // Create new user document in Firestore
+        await setDoc(userDocRef, baseUserData);
+        setUserData(baseUserData);
+        setEditData(baseUserData);
+      }
+    } catch (error) {
+      console.error("Error loading user data:", error);
+      // Fall back to basic Firebase Auth data
+      const fallbackData = {
+        name: user.displayName || "User",
+        email: user.email || "",
+        phone: user.phoneNumber || "",
+        location: "",
+        joinDate: user.metadata.creationTime,
+        bio: "",
+        avatar: user.photoURL,
+        timezone: "Pacific Standard Time",
+        language: "English",
+        theme: "dark",
+      };
+      setUserData(fallbackData);
+      setEditData(fallbackData);
+    }
+  };
+
+  // Handle save changes
+  const handleSave = async () => {
+    if (!currentUser) return;
+
+    setUpdateLoading(true);
+    try {
+      // Update Firebase Auth profile if name or photo changed
+      if (editData.name !== userData.name) {
+        await updateProfile(currentUser, {
+          displayName: editData.name,
+        });
+      }
+
+      // Update email if changed (requires re-authentication in production)
+      if (editData.email !== userData.email) {
+        try {
+          await updateEmail(currentUser, editData.email);
+        } catch (emailError) {
+          console.error("Email update failed:", emailError);
+          alert("Email update failed. You may need to re-authenticate.");
+          // Revert email change
+          setEditData({ ...editData, email: userData.email });
+          return;
+        }
+      }
+
+      // Update Firestore document
+      const userDocRef = doc(db, "users", currentUser.uid);
+      await updateDoc(userDocRef, {
+        name: editData.name,
+        email: editData.email,
+        phone: editData.phone,
+        location: editData.location,
+        bio: editData.bio,
+        timezone: editData.timezone,
+        language: editData.language,
+        theme: editData.theme,
+        updatedAt: new Date().toISOString(),
+      });
+
+      setUserData(editData);
+      setIsEditing(false);
+      alert("Profile updated successfully!");
+    } catch (error) {
+      console.error("Error updating profile:", error);
+      alert("Failed to update profile. Please try again.");
+    }
+    setUpdateLoading(false);
   };
 
   const handleCancel = () => {
@@ -56,11 +181,28 @@ const UserProfile = () => {
     setIsEditing(false);
   };
 
-  const handleLogout = () => {
-    // In a real app, this would clear tokens, redirect to login, etc.
-    console.log("Logging out...");
-    setShowLogoutModal(false);
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setShowLogoutModal(false);
+      navigate("/");
+    } catch (error) {
+      console.error("Error logging out:", error);
+      alert("Failed to logout. Please try again.");
+    }
   };
+
+  // Show loading screen while checking auth state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <Loader className="animate-spin" size={32} />
+          <p className="text-gray-400">Loading profile...</p>
+        </div>
+      </div>
+    );
+  }
 
   const tabs = [
     { id: "profile", label: "Profile", icon: User },
@@ -117,9 +259,14 @@ const UserProfile = () => {
           </h3>
           <button
             onClick={() => setIsEditing(!isEditing)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+            disabled={updateLoading}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-lg transition-colors"
           >
-            <Edit3 size={16} />
+            {updateLoading ? (
+              <Loader size={16} className="animate-spin" />
+            ) : (
+              <Edit3 size={16} />
+            )}
             {isEditing ? "Cancel" : "Edit"}
           </button>
         </div>
@@ -142,7 +289,7 @@ const UserProfile = () => {
               />
             ) : (
               <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-                {userData.name}
+                {userData.name || "Not provided"}
               </p>
             )}
           </div>
@@ -164,7 +311,7 @@ const UserProfile = () => {
               />
             ) : (
               <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-                {userData.email}
+                {userData.email || "Not provided"}
               </p>
             )}
           </div>
@@ -186,7 +333,7 @@ const UserProfile = () => {
               />
             ) : (
               <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-                {userData.phone}
+                {userData.phone || "Not provided"}
               </p>
             )}
           </div>
@@ -208,7 +355,7 @@ const UserProfile = () => {
               />
             ) : (
               <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-                {userData.location}
+                {userData.location || "Not provided"}
               </p>
             )}
           </div>
@@ -231,7 +378,7 @@ const UserProfile = () => {
             />
           ) : (
             <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-              {userData.bio}
+              {userData.bio || "No bio provided"}
             </p>
           )}
         </div>
@@ -241,14 +388,20 @@ const UserProfile = () => {
           <div className="flex gap-3 mt-6">
             <button
               onClick={handleSave}
-              className="flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+              disabled={updateLoading}
+              className="flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-green-600/50 text-white rounded-lg transition-colors"
             >
-              <Save size={16} />
-              Save Changes
+              {updateLoading ? (
+                <Loader size={16} className="animate-spin" />
+              ) : (
+                <Save size={16} />
+              )}
+              {updateLoading ? "Saving..." : "Save Changes"}
             </button>
             <button
               onClick={handleCancel}
-              className="flex items-center gap-2 px-6 py-3 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors"
+              disabled={updateLoading}
+              className="flex items-center gap-2 px-6 py-3 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-600/50 text-white rounded-lg transition-colors"
             >
               <X size={16} />
               Cancel
@@ -298,6 +451,41 @@ const UserProfile = () => {
               Enable
             </button>
           </div>
+
+          {/* Account Information */}
+          <div className="p-4 bg-gray-800/20 border border-gray-700 rounded-lg">
+            <h4 className="font-medium text-white mb-3">Account Information</h4>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-400">User ID:</span>
+                <span className="text-white font-mono text-xs">
+                  {currentUser?.uid}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Email Verified:</span>
+                <span
+                  className={
+                    currentUser?.emailVerified
+                      ? "text-green-400"
+                      : "text-red-400"
+                  }
+                >
+                  {currentUser?.emailVerified ? "Yes" : "No"}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Last Sign In:</span>
+                <span className="text-white">
+                  {currentUser?.metadata?.lastSignInTime
+                    ? new Date(
+                        currentUser.metadata.lastSignInTime
+                      ).toLocaleDateString()
+                    : "Unknown"}
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -314,11 +502,17 @@ const UserProfile = () => {
               <Globe size={16} className="inline mr-2" />
               Language
             </label>
-            <select className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
+            <select
+              value={editData.language}
+              onChange={(e) =>
+                setEditData({ ...editData, language: e.target.value })
+              }
+              className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="English">English</option>
+              <option value="Spanish">Spanish</option>
+              <option value="French">French</option>
+              <option value="German">German</option>
             </select>
           </div>
 
@@ -327,11 +521,25 @@ const UserProfile = () => {
               <Calendar size={16} className="inline mr-2" />
               Timezone
             </label>
-            <select className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="PST">Pacific Standard Time</option>
-              <option value="EST">Eastern Standard Time</option>
-              <option value="CST">Central Standard Time</option>
-              <option value="MST">Mountain Standard Time</option>
+            <select
+              value={editData.timezone}
+              onChange={(e) =>
+                setEditData({ ...editData, timezone: e.target.value })
+              }
+              className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="Pacific Standard Time">
+                Pacific Standard Time
+              </option>
+              <option value="Eastern Standard Time">
+                Eastern Standard Time
+              </option>
+              <option value="Central Standard Time">
+                Central Standard Time
+              </option>
+              <option value="Mountain Standard Time">
+                Mountain Standard Time
+              </option>
             </select>
           </div>
         </div>

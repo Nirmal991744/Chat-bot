@@ -3,16 +3,23 @@ import { Route, Routes } from "react-router-dom";
 import ChatbotLogin from "./components/ChatbotLogin";
 import ChatbotHome from "./components/ChatbotHome";
 import UserProfile from "./components/UserProfile";
-
+import ProtectedRoute from "./ProtectedRoute ";
 function App() {
   return (
     <>
-      <ChatbotHome />
-      {/* <Routes>
+      <Routes>
+        <Route
+          path="/home"
+          element={
+            <ProtectedRoute>
+              <ChatbotHome />
+            </ProtectedRoute>
+          }
+        />
         <Route path="/" element={<ChatbotLogin />} />
-        <Route path="/home" element={<ChatbotHome />} />
+
         <Route path="/profile" element={<UserProfile />} />
-      </Routes> */}
+      </Routes>
     </>
   );
 }
