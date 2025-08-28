@@ -16,23 +16,22 @@ import {
   Loader,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "../useAuth"; // Adjust path as needed
+import { useAuth } from "../useAuth";
+import OpenAI from "openai";
+
 import {
-  getFirestore,
   collection,
-  doc,
   addDoc,
-  getDocs,
-  deleteDoc,
-  updateDoc,
   query,
   where,
   orderBy,
   onSnapshot,
+  deleteDoc,
+  doc,
+  updateDoc,
+  getDocs,
 } from "firebase/firestore";
-
-// Initialize Firestore
-const db = getFirestore();
+import { db } from "../lib/firebase";
 
 const ChatbotHome = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -40,61 +39,87 @@ const ChatbotHome = () => {
   const [currentChatId, setCurrentChatId] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [chats, setChats] = useState([]);
   const [chatsLoading, setChatsLoading] = useState(true);
+  const [hasCreatedInitialChat, setHasCreatedInitialChat] = useState(false);
   const messagesEndRef = useRef(null);
 
   const navigate = useNavigate();
-  const { user, logout, loading: authLoading } = useAuth();
+  const { user, logout, loading: authLoading, isAuthenticated } = useAuth();
 
-  const [chats, setChats] = useState([]);
+  // Initialize OpenAI with your API key
+  const openai = new OpenAI({
+    apiKey:
+      "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",
+    dangerouslyAllowBrowser: true,
+  });
 
   // Redirect if not authenticated
   useEffect(() => {
-    if (!authLoading && !user) {
+    if (!authLoading && !isAuthenticated) {
       navigate("/login");
     }
-  }, [user, authLoading, navigate]);
+  }, [isAuthenticated, authLoading, navigate]);
 
-  // Load user's chats from Firestore
+  // Load chats from Firestore - FIXED: Simplified query to avoid index requirement
   useEffect(() => {
     if (!user) return;
 
-    const loadChats = async () => {
-      try {
-        setChatsLoading(true);
-        const chatsRef = collection(db, "chats");
-        const q = query(
-          chatsRef,
-          where("userId", "==", user.uid),
-          orderBy("timestamp", "desc")
-        );
+    setChatsLoading(true);
 
-        // Set up real-time listener
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-          const userChats = [];
-          snapshot.forEach((doc) => {
-            userChats.push({ id: doc.id, ...doc.data() });
+    // First, try the simple query without ordering to avoid index issues
+    const q = query(collection(db, "chats"), where("userId", "==", user.uid));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (querySnapshot) => {
+        const chatsData = [];
+        querySnapshot.forEach((doc) => {
+          chatsData.push({
+            id: doc.id,
+            ...doc.data(),
           });
-
-          setChats(userChats);
-
-          // If no current chat selected and we have chats, select the first one
-          if (!currentChatId && userChats.length > 0) {
-            setCurrentChatId(userChats[0].id);
-          }
-
-          setChatsLoading(false);
         });
 
-        return () => unsubscribe();
-      } catch (error) {
+        // Sort in JavaScript instead of Firestore to avoid index requirement
+        chatsData.sort(
+          (a, b) =>
+            new Date(b.updatedAt || b.createdAt) -
+            new Date(a.updatedAt || a.createdAt)
+        );
+
+        console.log("Loaded chats:", chatsData);
+        setChats(chatsData);
+        setChatsLoading(false);
+
+        // Set current chat if none selected and chats exist
+        if (!currentChatId && chatsData.length > 0) {
+          setCurrentChatId(chatsData[0].id);
+        }
+      },
+      (error) => {
         console.error("Error loading chats:", error);
         setChatsLoading(false);
-      }
-    };
 
-    loadChats();
+        // If we still get an index error, we'll need to create the index
+        if (error.code === "failed-precondition") {
+          console.error(
+            "Index required. Please create the index using the URL in the error message above."
+          );
+        }
+      }
+    );
+
+    return () => unsubscribe();
   }, [user, currentChatId]);
+
+  // Create initial chat on login (only once per session)
+  useEffect(() => {
+    if (user && !chatsLoading && chats.length === 0 && !hasCreatedInitialChat) {
+      createInitialChat();
+      setHasCreatedInitialChat(true);
+    }
+  }, [user, chats.length, chatsLoading, hasCreatedInitialChat]);
 
   const currentChat = chats.find((chat) => chat.id === currentChatId);
   const filteredChats = chats.filter((chat) =>
@@ -109,10 +134,36 @@ const ChatbotHome = () => {
     scrollToBottom();
   }, [currentChat?.messages]);
 
+  // Create initial chat on login (empty chat, first response comes from OpenAI)
+  const createInitialChat = async () => {
+    if (!user) return;
+
+    try {
+      const newChat = {
+        title: "New Conversation",
+        userId: user.uid,
+        messages: [],
+        lastMessage: "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const docRef = await addDoc(collection(db, "chats"), newChat);
+      setCurrentChatId(docRef.id);
+      console.log("Initial chat created successfully");
+    } catch (error) {
+      console.error("Error creating initial chat:", error);
+    }
+  };
+
   // Handle logout
   const handleLogout = async () => {
     try {
       await logout();
+      // Reset state on logout
+      setChats([]);
+      setCurrentChatId(null);
+      setHasCreatedInitialChat(false);
       navigate("/");
     } catch (error) {
       console.error("Logout error:", error);
@@ -124,181 +175,199 @@ const ChatbotHome = () => {
     navigate("/profile");
   }
 
-  // API call function
-  const sendToAPI = async (userMessage) => {
+  // OpenAI API call
+  const aiCall = async (prompt, conversationHistory = []) => {
     try {
-      console.log("Sending message:", userMessage);
+      console.log("Sending message to OpenAI:", prompt);
 
-      const res = await fetch("/webhook/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+      // Prepare messages for OpenAI with system context and conversation history
+      const messages = [
+        {
+          role: "system",
+          content:
+            "You are a helpful, knowledgeable, and friendly AI assistant. Provide accurate, informative, and engaging responses. Be conversational but professional. If you're unsure about something, acknowledge it honestly.",
         },
-        body: JSON.stringify({
-          msg: userMessage,
-        }),
+        // Add recent conversation history (last 10 messages for context)
+        ...conversationHistory.slice(-10).map((msg) => ({
+          role: msg.isBot ? "assistant" : "user",
+          content: msg.text,
+        })),
+        // Add current user message
+        {
+          role: "user",
+          content: prompt,
+        },
+      ];
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: messages,
+        max_tokens: 1500,
+        temperature: 0.7,
+        presence_penalty: 0.1,
+        frequency_penalty: 0.1,
       });
 
-      console.log("Response status:", res.status);
-      console.log("Response ok:", res.ok);
+      const response = completion.choices[0]?.message?.content;
 
-      if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
+      if (!response) {
+        throw new Error("No response received from OpenAI");
       }
 
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        const data = await res.json();
-        console.log("Response data:", data);
+      console.log("OpenAI response received successfully");
+      return response;
+    } catch (error) {
+      console.error("Error calling OpenAI:", error);
 
-        return (
-          data.message || data.response || data.text || JSON.stringify(data)
-        );
+      // Provide specific error messages based on error type
+      if (error.status === 401) {
+        return "I apologize, but there's an authentication issue with the AI service. Please check the API configuration.";
+      } else if (error.status === 429) {
+        return "I'm receiving too many requests right now. Please wait a moment and try again.";
+      } else if (error.status === 500) {
+        return "The AI service is currently experiencing issues. Please try again in a few moments.";
+      } else if (
+        error.name === "NetworkError" ||
+        error.message.includes("fetch")
+      ) {
+        return "I'm having trouble connecting to the AI service. Please check your internet connection and try again.";
       } else {
-        const text = await res.text();
-        console.log("Response text:", text);
-        return text;
+        return "I encountered an unexpected error. Please try rephrasing your message or try again later.";
       }
-    } catch (err) {
-      console.error("Error sending message:", err);
-      console.error("Error details:", err.message);
-
-      if (err.message.includes("Failed to fetch")) {
-        return "Sorry, I'm having trouble connecting to the server. Please check your internet connection and try again.";
-      }
-      return "Sorry, I encountered an error. Please try again.";
     }
   };
 
-  // Main send message function
+  // FIXED: Enhanced send message function with better error handling
   const sendMessage = async () => {
-    if (!message.trim() || isLoading || !currentChatId) return;
+    if (!message.trim() || isLoading || !currentChatId) {
+      console.log("Cannot send message:", {
+        message: message.trim(),
+        isLoading,
+        currentChatId,
+      });
+      return;
+    }
 
     const userMessage = message.trim();
     setMessage("");
     setIsLoading(true);
 
+    console.log("Sending message:", userMessage);
+    console.log("Current chat ID:", currentChatId);
+
     // Create user message
     const newUserMessage = {
-      id: Date.now(),
+      id: `user_${Date.now()}`,
       text: userMessage,
       isBot: false,
-      timestamp: new Date(),
+      timestamp: new Date().toISOString(),
     };
 
     try {
-      // Update local state immediately
-      setChats((prevChats) =>
-        prevChats.map((chat) =>
-          chat.id === currentChatId
-            ? {
-                ...chat,
-                messages: [...(chat.messages || []), newUserMessage],
-                lastMessage: userMessage,
-                timestamp: new Date().toISOString(),
-              }
-            : chat
-        )
-      );
+      // Get current messages
+      const currentMessages = currentChat?.messages || [];
+      console.log("Current messages before update:", currentMessages);
 
-      // Update Firestore
-      const chatRef = doc(db, "chats", currentChatId);
-      const currentChatData = chats.find((chat) => chat.id === currentChatId);
-      await updateDoc(chatRef, {
-        messages: [...(currentChatData?.messages || []), newUserMessage],
+      const updatedMessages = [...currentMessages, newUserMessage];
+      console.log("Updated messages with user message:", updatedMessages);
+
+      // Update chat with user message immediately for better UX
+      console.log("Updating Firestore with user message...");
+      const updateData = {
+        messages: updatedMessages,
         lastMessage: userMessage,
-        timestamp: new Date().toISOString(),
-      });
+        updatedAt: new Date().toISOString(),
+      };
 
-      // Get response from API
-      const botResponseText = await sendToAPI(userMessage);
+      // Update chat title if it's the first user message
+      if (currentMessages.length === 0) {
+        updateData.title =
+          userMessage.length > 50
+            ? userMessage.substring(0, 50) + "..."
+            : userMessage;
+      }
+
+      await updateDoc(doc(db, "chats", currentChatId), updateData);
+      console.log("Firestore updated with user message");
+
+      // Get response from OpenAI
+      console.log("Calling OpenAI...");
+      const botResponseText = await aiCall(userMessage, currentMessages);
+      console.log("OpenAI response:", botResponseText);
 
       // Create bot message
       const botResponse = {
-        id: Date.now() + 1,
+        id: `bot_${Date.now()}`,
         text: botResponseText,
         isBot: true,
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
       };
 
-      // Update local state with bot response
-      setChats((prevChats) =>
-        prevChats.map((chat) =>
-          chat.id === currentChatId
-            ? {
-                ...chat,
-                messages: [...(chat.messages || []), botResponse],
-                lastMessage:
-                  botResponseText.length > 50
-                    ? botResponseText.substring(0, 50) + "..."
-                    : botResponseText,
-              }
-            : chat
-        )
-      );
+      // Update chat with bot response
+      const finalMessages = [...updatedMessages, botResponse];
+      console.log("Final messages with bot response:", finalMessages);
 
-      // Update Firestore with bot response
-      const updatedChatData = chats.find((chat) => chat.id === currentChatId);
-      await updateDoc(chatRef, {
-        messages: [...(updatedChatData?.messages || []), botResponse],
+      console.log("Updating Firestore with bot response...");
+      await updateDoc(doc(db, "chats", currentChatId), {
+        messages: finalMessages,
         lastMessage:
           botResponseText.length > 50
             ? botResponseText.substring(0, 50) + "..."
             : botResponseText,
+        updatedAt: new Date().toISOString(),
       });
+      console.log("Firestore updated with bot response");
     } catch (error) {
       console.error("Error in sendMessage:", error);
 
       // Add error message as bot response
       const errorResponse = {
-        id: Date.now() + 1,
-        text: "Sorry, I encountered an error processing your message. Please try again.",
+        id: `error_${Date.now()}`,
+        text: "I apologize, but I encountered an error processing your message. Please try again, or if the problem persists, try creating a new chat.",
         isBot: true,
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
       };
 
-      setChats((prevChats) =>
-        prevChats.map((chat) =>
-          chat.id === currentChatId
-            ? {
-                ...chat,
-                messages: [...(chat.messages || []), errorResponse],
-                lastMessage: errorResponse.text,
-              }
-            : chat
-        )
-      );
+      try {
+        const currentMessages = currentChat?.messages || [];
+        const errorMessages = [
+          ...currentMessages,
+          newUserMessage,
+          errorResponse,
+        ];
+
+        await updateDoc(doc(db, "chats", currentChatId), {
+          messages: errorMessages,
+          lastMessage: errorResponse.text,
+          updatedAt: new Date().toISOString(),
+        });
+        console.log("Error message added to Firestore");
+      } catch (updateError) {
+        console.error("Error updating chat with error message:", updateError);
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Enhanced create new chat function
   const createNewChat = async () => {
     if (!user) return;
 
     try {
       const newChat = {
         title: "New Conversation",
-        lastMessage: "Start a new conversation",
-        timestamp: new Date().toISOString(),
         userId: user.uid,
-        messages: [
-          {
-            id: 1,
-            text: "Hello! How can I help you today?",
-            isBot: true,
-            timestamp: new Date(),
-          },
-        ],
+        messages: [],
+        lastMessage: "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
 
       const docRef = await addDoc(collection(db, "chats"), newChat);
-
-      // Update local state
-      const chatWithId = { id: docRef.id, ...newChat };
-      setChats([chatWithId, ...chats]);
       setCurrentChatId(docRef.id);
       setIsSidebarOpen(false);
+      console.log("New chat created successfully");
     } catch (error) {
       console.error("Error creating new chat:", error);
       alert("Failed to create new chat. Please try again.");
@@ -306,22 +375,22 @@ const ChatbotHome = () => {
   };
 
   const deleteChat = async (chatId) => {
-    try {
-      // Delete from Firestore
-      await deleteDoc(doc(db, "chats", chatId));
+    if (chats.length === 1) {
+      alert("You cannot delete your last chat. Create a new chat first.");
+      return;
+    }
 
-      // Update local state
-      const remainingChats = chats.filter((chat) => chat.id !== chatId);
-      setChats(remainingChats);
+    try {
+      await deleteDoc(doc(db, "chats", chatId));
 
       // If we're deleting the current chat, switch to another one
       if (chatId === currentChatId) {
+        const remainingChats = chats.filter((chat) => chat.id !== chatId);
         if (remainingChats.length > 0) {
           setCurrentChatId(remainingChats[0].id);
-        } else {
-          setCurrentChatId(null);
         }
       }
+      console.log("Chat deleted successfully");
     } catch (error) {
       console.error("Error deleting chat:", error);
       alert("Failed to delete chat. Please try again.");
@@ -380,7 +449,7 @@ const ChatbotHome = () => {
         {/* Sidebar Header */}
         <div className="p-6 border-b border-gray-800">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold">Chatbot</h2>
+            <h2 className="text-2xl font-bold">AI Chat</h2>
             <button
               onClick={() => setIsSidebarOpen(false)}
               className="lg:hidden p-2 hover:bg-gray-800 rounded-lg transition-colors"
@@ -428,11 +497,13 @@ const ChatbotHome = () => {
             <div className="flex flex-col items-center py-8 text-gray-400">
               <MessageCircle size={48} className="mb-4 opacity-50" />
               <p className="text-center">
-                {searchQuery ? "No chats match your search" : "No chats yet"}
+                {searchQuery
+                  ? "No chats match your search"
+                  : "Creating your first chat..."}
               </p>
               {!searchQuery && (
                 <p className="text-sm text-center mt-2">
-                  Click "New Chat" to start your first conversation
+                  Your AI assistant is getting ready
                 </p>
               )}
             </div>
@@ -457,7 +528,9 @@ const ChatbotHome = () => {
                       {chat.lastMessage}
                     </p>
                     <p className="text-xs text-gray-500 mt-1">
-                      {new Date(chat.timestamp).toLocaleDateString()}
+                      {new Date(
+                        chat.updatedAt || chat.createdAt
+                      ).toLocaleDateString()}
                     </p>
                   </div>
                   <div className="opacity-0 group-hover:opacity-100 transition-opacity">
@@ -492,7 +565,9 @@ const ChatbotHome = () => {
               )}
             </div>
             <div className="flex-1">
-              <p className="font-medium">{user?.displayName || "User"}</p>
+              <p className="font-medium">
+                {user?.displayName || user?.email?.split("@")[0] || "User"}
+              </p>
               <p className="text-sm text-gray-400 truncate">{user?.email}</p>
             </div>
             <button
@@ -519,10 +594,12 @@ const ChatbotHome = () => {
               </button>
               <div>
                 <h1 className="text-xl lg:text-2xl font-bold">
-                  {currentChat?.title || "Select a chat"}
+                  {currentChat?.title || "AI Chat"}
                 </h1>
                 <p className="text-gray-400 text-sm">
-                  {isLoading ? "AI is typing..." : "AI Assistant"}
+                  {isLoading
+                    ? "AI is typing..."
+                    : "Powered by OpenAI GPT-4o-mini"}
                 </p>
               </div>
             </div>
@@ -559,53 +636,64 @@ const ChatbotHome = () => {
             <div className="flex flex-col items-center justify-center h-full text-gray-400">
               <Bot size={64} className="mb-4 opacity-50" />
               <h2 className="text-2xl font-semibold mb-2">
-                Welcome to AI Chat
+                Setting up your AI Assistant
               </h2>
               <p className="text-center max-w-md">
-                Select a chat from the sidebar or create a new conversation to
-                get started
+                Your personalized AI chat is being prepared...
               </p>
             </div>
           ) : (
             <>
-              {currentChat?.messages?.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex items-start gap-3 ${
-                    msg.isBot ? "" : "flex-row-reverse"
-                  }`}
-                >
+              {currentChat?.messages?.length > 0 ? (
+                currentChat.messages.map((msg) => (
                   <div
-                    className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                      msg.isBot
-                        ? "bg-gradient-to-br from-blue-500 to-purple-600"
-                        : "bg-gradient-to-br from-green-500 to-blue-500"
-                    }`}
-                  >
-                    {msg.isBot ? <Bot size={16} /> : <User size={16} />}
-                  </div>
-                  <div
-                    className={`max-w-xs lg:max-w-md xl:max-w-lg ${
-                      msg.isBot ? "" : "text-right"
+                    key={msg.id}
+                    className={`flex items-start gap-3 ${
+                      msg.isBot ? "" : "flex-row-reverse"
                     }`}
                   >
                     <div
-                      className={`p-3 lg:p-4 rounded-2xl ${
+                      className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                         msg.isBot
-                          ? "bg-gray-800/50 border border-gray-700"
-                          : "bg-blue-600/20 border border-blue-500/30"
+                          ? "bg-gradient-to-br from-blue-500 to-purple-600"
+                          : "bg-gradient-to-br from-green-500 to-blue-500"
                       }`}
                     >
-                      <p className="text-sm lg:text-base whitespace-pre-wrap">
-                        {msg.text}
+                      {msg.isBot ? <Bot size={16} /> : <User size={16} />}
+                    </div>
+                    <div
+                      className={`max-w-xs lg:max-w-md xl:max-w-lg ${
+                        msg.isBot ? "" : "text-right"
+                      }`}
+                    >
+                      <div
+                        className={`p-3 lg:p-4 rounded-2xl ${
+                          msg.isBot
+                            ? "bg-gray-800/50 border border-gray-700"
+                            : "bg-blue-600/20 border border-blue-500/30"
+                        }`}
+                      >
+                        <p className="text-sm lg:text-base whitespace-pre-wrap">
+                          {msg.text}
+                        </p>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {formatTime(msg.timestamp)}
                       </p>
                     </div>
-                    <p className="text-xs text-gray-500 mt-1">
-                      {formatTime(msg.timestamp)}
-                    </p>
                   </div>
+                ))
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                  <MessageCircle size={48} className="mb-4 opacity-50" />
+                  <h2 className="text-xl font-semibold mb-2">
+                    Start a conversation
+                  </h2>
+                  <p className="text-center">
+                    Send a message to begin chatting with your AI assistant
+                  </p>
                 </div>
-              )) || []}
+              )}
 
               {/* Loading indicator */}
               {isLoading && (
@@ -613,11 +701,13 @@ const ChatbotHome = () => {
                   <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-gradient-to-br from-blue-500 to-purple-600">
                     <Bot size={16} />
                   </div>
-                  <div className="max-w-xs lg:max-w-md xl:max-w-lg">
+                  <div className="max-w-xs lg:max-w-md xl:max-lg">
                     <div className="p-3 lg:p-4 rounded-2xl bg-gray-800/50 border border-gray-700">
                       <div className="flex items-center gap-2">
                         <Loader className="animate-spin" size={16} />
-                        <p className="text-sm lg:text-base">Thinking...</p>
+                        <p className="text-sm lg:text-base">
+                          AI is thinking...
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -641,10 +731,10 @@ const ChatbotHome = () => {
                   onKeyPress={handleKeyPress}
                   placeholder={
                     !currentChat
-                      ? "Select or create a chat to start messaging..."
+                      ? "Setting up chat..."
                       : isLoading
-                      ? "Please wait..."
-                      : "Type your message..."
+                      ? "AI is responding..."
+                      : "Ask me anything..."
                   }
                   disabled={isLoading || !currentChat}
                   className="w-full px-4 py-3 lg:py-4 pr-12 bg-gray-800/50 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
@@ -663,7 +753,7 @@ const ChatbotHome = () => {
               </div>
             </div>
             <p className="text-xs text-gray-500 mt-2 text-center">
-              Press Enter to send • AI can make mistakes
+              Press Enter to send • Powered by OpenAI GPT-4o-mini
             </p>
           </div>
         </div>

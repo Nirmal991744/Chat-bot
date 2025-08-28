@@ -21,152 +21,125 @@ import {
   Loader,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { auth } from "../firebase"; // Adjust path as needed
-import {
-  signOut,
-  onAuthStateChanged,
-  updateProfile,
-  updateEmail,
-} from "firebase/auth";
-import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
-import { getFirestore } from "firebase/firestore";
-
-// Initialize Firestore
-const db = getFirestore();
+import { useAuth } from "../useAuth"; // Use the correct import path
+import { doc, updateDoc, getDoc, setDoc } from "firebase/firestore";
+import { db } from "../lib/firebase";
 
 const UserProfile = () => {
   const navigate = useNavigate();
-  const [currentUser, setCurrentUser] = useState(null);
+  const {
+    user,
+    logout,
+    isAuthenticated,
+    loading: authLoading,
+    updateUserProfile,
+  } = useAuth();
+
   const [loading, setLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [activeTab, setActiveTab] = useState("profile");
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [updateLoading, setUpdateLoading] = useState(false);
 
-  // User data state - now based on Firebase user
-  const [userData, setUserData] = useState({
-    name: "",
+  // Simplified user data state focused on user information only
+  const [userInfo, setUserInfo] = useState({
+    displayName: "",
     email: "",
-    phone: "",
+    phoneNumber: "",
     location: "",
-    joinDate: "",
     bio: "",
-    avatar: null,
+    photoURL: null,
     timezone: "Pacific Standard Time",
     language: "English",
     theme: "dark",
+    createdAt: "",
   });
 
-  const [editData, setEditData] = useState(userData);
+  const [editData, setEditData] = useState(userInfo);
 
-  // Listen for auth state changes
+  // Check authentication and load user data
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        setCurrentUser(user);
-        await loadUserData(user);
+    if (!authLoading) {
+      if (!isAuthenticated || !user) {
+        navigate("/");
       } else {
-        // User is not logged in, redirect to login
-        navigate("/login");
+        loadUserData();
       }
       setLoading(false);
-    });
+    }
+  }, [isAuthenticated, user, authLoading, navigate]);
 
-    return () => unsubscribe();
-  }, [navigate]);
+  // Load user data from Firebase
+  const loadUserData = async () => {
+    if (!user) return;
 
-  // Load user data from Firestore
-  const loadUserData = async (user) => {
     try {
+      // Get additional user data from Firestore
       const userDocRef = doc(db, "users", user.uid);
-      const userDoc = await getDoc(userDocRef);
+      const userDocSnap = await getDoc(userDocRef);
 
-      const baseUserData = {
-        name: user.displayName || "User",
+      let additionalData = {};
+      if (userDocSnap.exists()) {
+        additionalData = userDocSnap.data();
+      }
+
+      const userData = {
+        displayName: user.displayName || user.email?.split("@")[0] || "User",
         email: user.email || "",
-        phone: user.phoneNumber || "",
-        location: "",
-        joinDate: user.metadata.creationTime,
-        bio: "",
-        avatar: user.photoURL,
-        timezone: "Pacific Standard Time",
-        language: "English",
-        theme: "dark",
+        phoneNumber: additionalData.phoneNumber || "",
+        location: additionalData.location || "",
+        bio: additionalData.bio || "",
+        photoURL: user.photoURL || null,
+        timezone: additionalData.timezone || "Pacific Standard Time",
+        language: additionalData.language || "English",
+        theme: additionalData.theme || "dark",
+        createdAt: user.metadata?.creationTime || new Date().toISOString(),
       };
 
-      if (userDoc.exists()) {
-        // Merge Firebase Auth data with Firestore data
-        const firestoreData = userDoc.data();
-        const mergedData = { ...baseUserData, ...firestoreData };
-        setUserData(mergedData);
-        setEditData(mergedData);
-      } else {
-        // Create new user document in Firestore
-        await setDoc(userDocRef, baseUserData);
-        setUserData(baseUserData);
-        setEditData(baseUserData);
-      }
+      setUserInfo(userData);
+      setEditData(userData);
     } catch (error) {
       console.error("Error loading user data:", error);
-      // Fall back to basic Firebase Auth data
-      const fallbackData = {
-        name: user.displayName || "User",
-        email: user.email || "",
-        phone: user.phoneNumber || "",
-        location: "",
-        joinDate: user.metadata.creationTime,
-        bio: "",
-        avatar: user.photoURL,
-        timezone: "Pacific Standard Time",
-        language: "English",
-        theme: "dark",
-      };
-      setUserData(fallbackData);
-      setEditData(fallbackData);
     }
   };
 
   // Handle save changes
   const handleSave = async () => {
-    if (!currentUser) return;
+    if (!user) return;
 
     setUpdateLoading(true);
     try {
-      // Update Firebase Auth profile if name or photo changed
-      if (editData.name !== userData.name) {
-        await updateProfile(currentUser, {
-          displayName: editData.name,
-        });
+      // Update Firebase Auth profile if display name changed
+      if (editData.displayName !== userInfo.displayName) {
+        await updateUserProfile(editData.displayName, editData.photoURL);
       }
 
-      // Update email if changed (requires re-authentication in production)
-      if (editData.email !== userData.email) {
-        try {
-          await updateEmail(currentUser, editData.email);
-        } catch (emailError) {
-          console.error("Email update failed:", emailError);
-          alert("Email update failed. You may need to re-authenticate.");
-          // Revert email change
-          setEditData({ ...editData, email: userData.email });
-          return;
-        }
-      }
-
-      // Update Firestore document
-      const userDocRef = doc(db, "users", currentUser.uid);
-      await updateDoc(userDocRef, {
-        name: editData.name,
-        email: editData.email,
-        phone: editData.phone,
+      // Update additional data in Firestore
+      const userDocRef = doc(db, "users", user.uid);
+      const userData = {
+        displayName: editData.displayName,
+        phoneNumber: editData.phoneNumber,
         location: editData.location,
         bio: editData.bio,
         timezone: editData.timezone,
         language: editData.language,
         theme: editData.theme,
         updatedAt: new Date().toISOString(),
-      });
+      };
 
-      setUserData(editData);
+      // Check if document exists, create if not
+      const userDocSnap = await getDoc(userDocRef);
+      if (userDocSnap.exists()) {
+        await updateDoc(userDocRef, userData);
+      } else {
+        await setDoc(userDocRef, {
+          ...userData,
+          email: user.email,
+          createdAt: user.metadata?.creationTime || new Date().toISOString(),
+        });
+      }
+
+      setUserInfo(editData);
       setIsEditing(false);
       alert("Profile updated successfully!");
     } catch (error) {
@@ -177,13 +150,13 @@ const UserProfile = () => {
   };
 
   const handleCancel = () => {
-    setEditData(userData);
+    setEditData(userInfo);
     setIsEditing(false);
   };
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await logout();
       setShowLogoutModal(false);
       navigate("/");
     } catch (error) {
@@ -193,7 +166,7 @@ const UserProfile = () => {
   };
 
   // Show loading screen while checking auth state
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
@@ -208,41 +181,44 @@ const UserProfile = () => {
     { id: "profile", label: "Profile", icon: User },
     { id: "security", label: "Security", icon: Shield },
     { id: "preferences", label: "Preferences", icon: Palette },
-    { id: "notifications", label: "Notifications", icon: Bell },
+    { id: "data", label: "Data", icon: Download },
   ];
 
   const ProfileTab = () => (
     <div className="space-y-6">
-      {/* Avatar Section */}
+      {/* Avatar and Basic Info */}
       <div className="flex flex-col sm:flex-row items-center gap-6">
         <div className="relative">
           <div className="w-24 h-24 sm:w-32 sm:h-32 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white text-3xl sm:text-4xl font-bold shadow-lg">
-            {userData.avatar ? (
+            {userInfo.photoURL ? (
               <img
-                src={userData.avatar}
+                src={userInfo.photoURL}
                 alt="Profile"
                 className="w-full h-full rounded-full object-cover"
               />
             ) : (
-              userData.name
+              userInfo.displayName
                 .split(" ")
                 .map((n) => n[0])
                 .join("")
+                .toUpperCase()
             )}
           </div>
-          <button className="absolute bottom-0 right-0 bg-blue-600 hover:bg-blue-700 p-2 rounded-full shadow-lg transition-colors">
-            <Camera size={16} />
-          </button>
+          {isEditing && (
+            <button className="absolute bottom-0 right-0 bg-blue-600 hover:bg-blue-700 p-2 rounded-full shadow-lg transition-colors">
+              <Camera size={16} />
+            </button>
+          )}
         </div>
 
         <div className="text-center sm:text-left">
           <h2 className="text-2xl sm:text-3xl font-bold text-white mb-2">
-            {userData.name}
+            {userInfo.displayName}
           </h2>
-          <p className="text-gray-400 mb-2">{userData.email}</p>
+          <p className="text-gray-400 mb-2">{userInfo.email}</p>
           <p className="text-sm text-gray-500">
             Member since{" "}
-            {new Date(userData.joinDate).toLocaleDateString("en-US", {
+            {new Date(userInfo.createdAt).toLocaleDateString("en-US", {
               year: "numeric",
               month: "long",
               day: "numeric",
@@ -251,19 +227,27 @@ const UserProfile = () => {
         </div>
       </div>
 
-      {/* User Information */}
+      {/* Personal Information */}
       <div className="bg-gray-800/30 backdrop-blur-sm border border-gray-700 rounded-xl p-6">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-xl font-semibold text-white">
             Personal Information
           </h3>
           <button
-            onClick={() => setIsEditing(!isEditing)}
+            onClick={() => {
+              if (isEditing) {
+                handleCancel();
+              } else {
+                setIsEditing(true);
+              }
+            }}
             disabled={updateLoading}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-lg transition-colors"
           >
             {updateLoading ? (
               <Loader size={16} className="animate-spin" />
+            ) : isEditing ? (
+              <X size={16} />
             ) : (
               <Edit3 size={16} />
             )}
@@ -272,48 +256,40 @@ const UserProfile = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Full Name */}
+          {/* Display Name */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
               <User size={16} className="inline mr-2" />
-              Full Name
+              Display Name
             </label>
             {isEditing ? (
               <input
                 type="text"
-                value={editData.name}
+                value={editData.displayName}
                 onChange={(e) =>
-                  setEditData({ ...editData, name: e.target.value })
+                  setEditData({ ...editData, displayName: e.target.value })
                 }
                 className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             ) : (
               <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-                {userData.name || "Not provided"}
+                {userInfo.displayName || "Not provided"}
               </p>
             )}
           </div>
 
-          {/* Email */}
+          {/* Email (Read-only) */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
               <Mail size={16} className="inline mr-2" />
               Email Address
             </label>
-            {isEditing ? (
-              <input
-                type="email"
-                value={editData.email}
-                onChange={(e) =>
-                  setEditData({ ...editData, email: e.target.value })
-                }
-                className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            ) : (
-              <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-                {userData.email || "Not provided"}
-              </p>
-            )}
+            <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
+              {userInfo.email || "Not provided"}
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              Email cannot be changed here
+            </p>
           </div>
 
           {/* Phone */}
@@ -325,15 +301,16 @@ const UserProfile = () => {
             {isEditing ? (
               <input
                 type="tel"
-                value={editData.phone}
+                value={editData.phoneNumber}
                 onChange={(e) =>
-                  setEditData({ ...editData, phone: e.target.value })
+                  setEditData({ ...editData, phoneNumber: e.target.value })
                 }
                 className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Enter phone number"
               />
             ) : (
               <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-                {userData.phone || "Not provided"}
+                {userInfo.phoneNumber || "Not provided"}
               </p>
             )}
           </div>
@@ -352,10 +329,11 @@ const UserProfile = () => {
                   setEditData({ ...editData, location: e.target.value })
                 }
                 className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Enter location"
               />
             ) : (
               <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-                {userData.location || "Not provided"}
+                {userInfo.location || "Not provided"}
               </p>
             )}
           </div>
@@ -377,15 +355,15 @@ const UserProfile = () => {
               placeholder="Tell us about yourself..."
             />
           ) : (
-            <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white">
-              {userData.bio || "No bio provided"}
+            <p className="px-4 py-3 bg-gray-800/20 border border-gray-700 rounded-lg text-white min-h-[100px]">
+              {userInfo.bio || "No bio provided"}
             </p>
           )}
         </div>
 
-        {/* Save/Cancel Buttons */}
+        {/* Save Button */}
         {isEditing && (
-          <div className="flex gap-3 mt-6">
+          <div className="mt-6">
             <button
               onClick={handleSave}
               disabled={updateLoading}
@@ -398,14 +376,6 @@ const UserProfile = () => {
               )}
               {updateLoading ? "Saving..." : "Save Changes"}
             </button>
-            <button
-              onClick={handleCancel}
-              disabled={updateLoading}
-              className="flex items-center gap-2 px-6 py-3 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-600/50 text-white rounded-lg transition-colors"
-            >
-              <X size={16} />
-              Cancel
-            </button>
           </div>
         )}
       </div>
@@ -416,22 +386,60 @@ const UserProfile = () => {
     <div className="space-y-6">
       <div className="bg-gray-800/30 backdrop-blur-sm border border-gray-700 rounded-xl p-6">
         <h3 className="text-xl font-semibold text-white mb-6">
-          Security Settings
+          Account Security
         </h3>
 
+        {/* Account Information */}
+        <div className="p-4 bg-gray-800/20 border border-gray-700 rounded-lg mb-6">
+          <h4 className="font-medium text-white mb-3">Account Details</h4>
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-gray-400">User ID:</span>
+              <span className="text-white font-mono text-xs">{user?.uid}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Email Verified:</span>
+              <span
+                className={
+                  user?.emailVerified ? "text-green-400" : "text-red-400"
+                }
+              >
+                {user?.emailVerified ? "Yes" : "No"}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Account Created:</span>
+              <span className="text-white">
+                {user?.metadata?.creationTime
+                  ? new Date(user.metadata.creationTime).toLocaleDateString()
+                  : "Unknown"}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Last Sign In:</span>
+              <span className="text-white">
+                {user?.metadata?.lastSignInTime
+                  ? new Date(user.metadata.lastSignInTime).toLocaleDateString()
+                  : "Unknown"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Security Actions */}
         <div className="space-y-4">
           <div className="flex items-center justify-between p-4 bg-gray-800/20 border border-gray-700 rounded-lg">
             <div className="flex items-center gap-3">
               <Key size={20} className="text-blue-400" />
               <div>
-                <h4 className="font-medium text-white">Change Password</h4>
+                <h4 className="font-medium text-white">Password Reset</h4>
                 <p className="text-sm text-gray-400">
-                  Update your password regularly
+                  Request a password reset email
                 </p>
               </div>
             </div>
             <button className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
-              Change
+              Reset
             </button>
           </div>
 
@@ -443,48 +451,13 @@ const UserProfile = () => {
                   Two-Factor Authentication
                 </h4>
                 <p className="text-sm text-gray-400">
-                  Add an extra layer of security
+                  Add extra security to your account
                 </p>
               </div>
             </div>
             <button className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors">
               Enable
             </button>
-          </div>
-
-          {/* Account Information */}
-          <div className="p-4 bg-gray-800/20 border border-gray-700 rounded-lg">
-            <h4 className="font-medium text-white mb-3">Account Information</h4>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-gray-400">User ID:</span>
-                <span className="text-white font-mono text-xs">
-                  {currentUser?.uid}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-400">Email Verified:</span>
-                <span
-                  className={
-                    currentUser?.emailVerified
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }
-                >
-                  {currentUser?.emailVerified ? "Yes" : "No"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-400">Last Sign In:</span>
-                <span className="text-white">
-                  {currentUser?.metadata?.lastSignInTime
-                    ? new Date(
-                        currentUser.metadata.lastSignInTime
-                      ).toLocaleDateString()
-                    : "Unknown"}
-                </span>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -528,20 +501,77 @@ const UserProfile = () => {
               }
               className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="Pacific Standard Time">
-                Pacific Standard Time
-              </option>
-              <option value="Eastern Standard Time">
-                Eastern Standard Time
-              </option>
-              <option value="Central Standard Time">
-                Central Standard Time
-              </option>
-              <option value="Mountain Standard Time">
-                Mountain Standard Time
-              </option>
+              <option value="Pacific Standard Time">Pacific (PST)</option>
+              <option value="Eastern Standard Time">Eastern (EST)</option>
+              <option value="Central Standard Time">Central (CST)</option>
+              <option value="Mountain Standard Time">Mountain (MST)</option>
             </select>
           </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              <Palette size={16} className="inline mr-2" />
+              Theme
+            </label>
+            <select
+              value={editData.theme}
+              onChange={(e) =>
+                setEditData({ ...editData, theme: e.target.value })
+              }
+              className="w-full px-4 py-3 bg-gray-800/50 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="auto">Auto</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <button
+            onClick={handleSave}
+            disabled={updateLoading}
+            className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-lg transition-colors"
+          >
+            {updateLoading ? (
+              <Loader size={16} className="animate-spin" />
+            ) : (
+              <Save size={16} />
+            )}
+            {updateLoading ? "Saving..." : "Save Preferences"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const DataTab = () => (
+    <div className="space-y-6">
+      <div className="bg-gray-800/30 backdrop-blur-sm border border-gray-700 rounded-xl p-6">
+        <h3 className="text-xl font-semibold text-white mb-6">
+          Data Management
+        </h3>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <button className="flex items-center gap-3 p-4 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 rounded-lg transition-colors">
+            <Download size={20} className="text-blue-400" />
+            <div className="text-left">
+              <h4 className="font-medium text-white">Export Data</h4>
+              <p className="text-sm text-gray-400">
+                Download your profile data
+              </p>
+            </div>
+          </button>
+
+          <button className="flex items-center gap-3 p-4 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded-lg transition-colors">
+            <Trash2 size={20} className="text-red-400" />
+            <div className="text-left">
+              <h4 className="font-medium text-white">Delete Account</h4>
+              <p className="text-sm text-gray-400">
+                Permanently delete account
+              </p>
+            </div>
+          </button>
         </div>
       </div>
     </div>
@@ -560,21 +590,28 @@ const UserProfile = () => {
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8 gap-4">
           <div>
             <h1 className="text-3xl sm:text-4xl font-bold mb-2">
-              Profile Settings
+              User Profile
             </h1>
             <p className="text-gray-400">
-              Manage your account settings and preferences
+              Manage your account information and preferences
             </p>
           </div>
 
-          {/* Logout Button */}
-          <button
-            onClick={() => setShowLogoutModal(true)}
-            className="flex items-center gap-2 px-6 py-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-400 hover:text-red-300 rounded-lg transition-all duration-200 transform hover:scale-105"
-          >
-            <LogOut size={20} />
-            Logout
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={() => navigate("/home")}
+              className="flex items-center gap-2 px-6 py-3 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-400 hover:text-blue-300 rounded-lg transition-all duration-200"
+            >
+              Back to Chat
+            </button>
+            <button
+              onClick={() => setShowLogoutModal(true)}
+              className="flex items-center gap-2 px-6 py-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-400 hover:text-red-300 rounded-lg transition-all duration-200"
+            >
+              <LogOut size={20} />
+              Logout
+            </button>
+          </div>
         </div>
 
         {/* Navigation Tabs */}
@@ -603,49 +640,7 @@ const UserProfile = () => {
           {activeTab === "profile" && <ProfileTab />}
           {activeTab === "security" && <SecurityTab />}
           {activeTab === "preferences" && <PreferencesTab />}
-          {activeTab === "notifications" && (
-            <div className="bg-gray-800/30 backdrop-blur-sm border border-gray-700 rounded-xl p-6">
-              <h3 className="text-xl font-semibold text-white mb-6">
-                Notification Settings
-              </h3>
-              <p className="text-gray-400">
-                Notification settings coming soon...
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Data Management */}
-        <div className="bg-gray-800/30 backdrop-blur-sm border border-gray-700 rounded-xl p-6">
-          <h3 className="text-xl font-semibold text-white mb-6">
-            Data Management
-          </h3>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <button className="flex items-center gap-3 p-4 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 rounded-lg transition-colors">
-              <Download size={20} className="text-blue-400" />
-              <div className="text-left">
-                <h4 className="font-medium text-white">Export Data</h4>
-                <p className="text-sm text-gray-400">Download your data</p>
-              </div>
-            </button>
-
-            <button className="flex items-center gap-3 p-4 bg-green-600/20 hover:bg-green-600/30 border border-green-500/30 rounded-lg transition-colors">
-              <Upload size={20} className="text-green-400" />
-              <div className="text-left">
-                <h4 className="font-medium text-white">Import Data</h4>
-                <p className="text-sm text-gray-400">Upload your data</p>
-              </div>
-            </button>
-
-            <button className="flex items-center gap-3 p-4 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded-lg transition-colors">
-              <Trash2 size={20} className="text-red-400" />
-              <div className="text-left">
-                <h4 className="font-medium text-white">Delete Account</h4>
-                <p className="text-sm text-gray-400">Permanently delete</p>
-              </div>
-            </button>
-          </div>
+          {activeTab === "data" && <DataTab />}
         </div>
       </div>
 
