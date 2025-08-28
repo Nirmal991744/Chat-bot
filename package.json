@@ -11,12 +11,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@apollo/client": "^4.0.0",
-    "@nhost/client": "^0.2.1",
-    "@nhost/react": "^3.11.1",
     "@tailwindcss/vite": "^4.1.12",
     "firebase": "^12.1.0",
-    "graphql": "^16.11.0",
     "lucide-react": "^0.541.0",
     "openai": "^5.15.0",
     "react": "^18.2.0",
